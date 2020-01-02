@@ -1,8 +1,9 @@
-package porter_twilio
+package main
 
 import (
 	"flag"
 	"fmt"
+	"github.com/hako/durafmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -34,8 +35,6 @@ var recipients []string
 
 var repeatNotificationThreshold, openNotificationThreshold time.Duration
 
-var monitorCtl chan int
-
 func main() {
 	accountSID = flag.String("twsid", "", "Twilio account SID")
 	twilioAuthToken = flag.String("twtoken", "", "Twilio authentication token")
@@ -49,6 +48,11 @@ func main() {
 	notifyTime := flag.Int("repeatthresh", 60, "Send repeat notifications at this interval (0 to send only one)")
 
 	flag.Parse()
+
+	if *accountSID == "" || *twilioAuthToken == "" || *sender == "" || *rcptList == "" || *porterApiKey == "" || *porterApiURI == "" {
+		flag.PrintDefaults()
+		os.Exit(1)
+	}
 
 	porterClient = client.NewClient()
 	porterClient.APIKey = *porterApiKey
@@ -72,6 +76,7 @@ func main() {
 		case <-sig:
 			fmt.Printf("%v Porter Twilio: Stopping daemon...\n", time.Now())
 			sendAll(genMsg(MsgMonitorDying))
+			time.Sleep(3 * time.Second)
 			os.Exit(0)
 		}
 	}
@@ -79,18 +84,20 @@ func main() {
 }
 
 func statusMonitor() {
-	var doors map[string]*DoorWatch
+	doors := make(map[string]*DoorWatch)
 	var errorMsgSent bool
 
 	for {
 		select {
 
 		default:
+			time.Sleep(5 * time.Second)
+
 			states, err := porterClient.List()
 			if err != nil {
 				if !errorMsgSent {
-					sendAll(genMsg(MsgMonitorError))
 					errorMsgSent = true
+					sendAll(genMsg(MsgMonitorError))
 				}
 				continue
 			}
@@ -116,12 +123,16 @@ func statusMonitor() {
 					continue
 				}
 
-				if doors[doorName].lastStateChangeTS == state.LastStateChangeTimestamp && !doors[doorName].lastNotificationSent.IsZero() && time.Since(doors[doorName].lastNotificationSent) < repeatNotificationThreshold {
-					continue
+				if doors[doorName].lastStateChangeTS == state.LastStateChangeTimestamp && !doors[doorName].lastNotificationSent.IsZero() {
+					if time.Since(doors[doorName].lastNotificationSent) < repeatNotificationThreshold {
+						continue
+					}
 				}
 
-				sendAll(genMsg(MsgStateChange, doorName, time.Since(state.LastStateChangeTimestamp)))
 				doors[doorName].lastNotificationSent = time.Now()
+				doors[doorName].lastStateChangeTS = state.LastStateChangeTimestamp
+
+				sendAll(genMsg(MsgStateChange, doorName, time.Since(state.LastStateChangeTimestamp)))
 			}
 		}
 
@@ -132,23 +143,23 @@ func genMsg(msgType int, values ...interface{}) string {
 	const stateStr = "[%v] Porter notice: %s has been open for %v"
 	const startStr = "[%v] Porter notice: Door monitor started"
 	const stopStr = "[%v] Porter notice: Door monitor is stopping"
-	const errorStr = "[%v] Porter notice: I'm having trouble reaching the door controller. The network might be offline, or the controller may need to be rebooted. I won't send any more messages until it comes back online."
-	const recoverStr = "[%v] Porter notice: The garage door controller seems to be back online!"
+	const errorStr = "[%v] Porter notice: I'm having trouble reaching the door controller. The network might be offline, or the controller may need to be rebooted. I won't send any more messages until I can reach it."
+	const recoverStr = "[%v] Porter notice: The garage door controller is back online! Status updates will resume."
 
-	const notificationTS = "Jan _2 15:04:05" //time.Stamp
-	currentTime := time.Now().Format(notificationTS)
+	currentTime := time.Now()
+	timeStr := currentTime.Format("Mon Jan 2 '06 3:4 PM")
 
 	switch msgType {
 	case MsgStateChange:
-		return fmt.Sprintf(stateStr, currentTime, values[0], values[1])
+		return fmt.Sprintf(stateStr, timeStr, values[0], durafmt.ParseShort(values[1].(time.Duration)).String())
 	case MsgMonitorDying:
-		return fmt.Sprintf(stopStr, currentTime)
+		return fmt.Sprintf(stopStr, timeStr)
 	case MsgMonitorStarting:
-		return fmt.Sprintf(startStr, currentTime)
+		return fmt.Sprintf(startStr, timeStr)
 	case MsgMonitorError:
-		return fmt.Sprintf(errorStr, currentTime)
+		return fmt.Sprintf(errorStr, timeStr)
 	case MsgMonitorRecover:
-		return fmt.Sprintf(recoverStr, currentTime)
+		return fmt.Sprintf(recoverStr, timeStr)
 
 	default:
 		return ""
@@ -158,11 +169,11 @@ func genMsg(msgType int, values ...interface{}) string {
 func sendAll(msg string) {
 	wg := &sync.WaitGroup{}
 	for _, number := range recipients {
-		go (func(wg *sync.WaitGroup, sender, msg string) {
+		go (func(wg *sync.WaitGroup, from, to string) {
 			wg.Add(1)
-			sendSMS(sender, number, msg)
+			sendSMS(from, to, msg)
 			wg.Done()
-		})(wg, *sender, msg)
+		})(wg, *sender, number)
 	}
 	wg.Wait()
 }
@@ -185,7 +196,9 @@ func sendSMS(sender, recipient, message string) int {
 	req.Header.Add("Accept", "application/json")
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 
-	res, _ := httpClient.Do(req)
-
-	return res.StatusCode
+	if res, err := httpClient.Do(req); err != nil {
+		return -1
+	} else {
+		return res.StatusCode
+	}
 }
