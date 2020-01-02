@@ -16,7 +16,8 @@ import (
 )
 
 const (
-	MsgStateChange int = iota
+	MsgStateChangeOpen int = iota
+	MsgStateChangeClosed
 	MsgMonitorDying
 	MsgMonitorStarting
 	MsgMonitorError
@@ -109,13 +110,17 @@ func statusMonitor() {
 
 			for doorName, state := range states {
 				if _, ok := doors[doorName]; !ok {
-					doors[state.Name] = &DoorWatch{
+					doors[doorName] = &DoorWatch{
 						lastStateChangeTS:    state.LastStateChangeTimestamp,
 						lastNotificationSent: time.Time{},
 					}
 				}
 
 				if state.SensorClosedState == state.State {
+					if doors[doorName].lastStateChangeTS != state.LastStateChangeTimestamp {
+						delete(doors, doorName)
+						sendAll(genMsg(MsgStateChangeClosed, doorName, time.Since(state.LastStateChangeTimestamp)))
+					}
 					continue
 				}
 
@@ -132,7 +137,7 @@ func statusMonitor() {
 				doors[doorName].lastNotificationSent = time.Now()
 				doors[doorName].lastStateChangeTS = state.LastStateChangeTimestamp
 
-				sendAll(genMsg(MsgStateChange, doorName, time.Since(state.LastStateChangeTimestamp)))
+				sendAll(genMsg(MsgStateChangeOpen, doorName, time.Since(state.LastStateChangeTimestamp)))
 			}
 		}
 
@@ -140,9 +145,10 @@ func statusMonitor() {
 }
 
 func genMsg(msgType int, values ...interface{}) string {
-	const stateStr = "[%v] Porter notice: %s has been open for %v"
-	const startStr = "[%v] Porter notice: Door monitor started"
-	const stopStr = "[%v] Porter notice: Door monitor is stopping"
+	const openStateStr = "[%v] Porter notice: %s has been open for %v."
+	const closedStateStr = "[%v] Porter notice: %s is now closed."
+	const startStr = "[%v] Porter notice: Door monitor started."
+	const stopStr = "[%v] Porter notice: Door monitor is stopping."
 	const errorStr = "[%v] Porter notice: I'm having trouble reaching the door controller. The network might be offline, or the controller may need to be rebooted. I won't send any more messages until I can reach it."
 	const recoverStr = "[%v] Porter notice: The garage door controller is back online! Status updates will resume."
 
@@ -150,8 +156,10 @@ func genMsg(msgType int, values ...interface{}) string {
 	timeStr := currentTime.Format("Mon Jan 2 '06 3:4 PM")
 
 	switch msgType {
-	case MsgStateChange:
-		return fmt.Sprintf(stateStr, timeStr, values[0], durafmt.ParseShort(values[1].(time.Duration)).String())
+	case MsgStateChangeOpen:
+		return fmt.Sprintf(openStateStr, timeStr, values[0], durafmt.ParseShort(values[1].(time.Duration)).String())
+	case MsgStateChangeClosed:
+		return fmt.Sprintf(closedStateStr, timeStr, values[0])
 	case MsgMonitorDying:
 		return fmt.Sprintf(stopStr, timeStr)
 	case MsgMonitorStarting:
