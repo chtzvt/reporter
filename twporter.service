@@ -1,0 +1,15 @@
+[Unit]
+Description=Porter Monitor
+After=syslog.target network-online.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/etc/default/twporter
+ExecStart=/usr/local/bin/twporter $TWPORTER_OPTS
+Restart=on-failure
+RestartSec=5
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
