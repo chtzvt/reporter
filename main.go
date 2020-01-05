@@ -117,7 +117,7 @@ func statusMonitor() {
 				}
 
 				if state.SensorClosedState == state.State {
-					if doors[doorName].lastStateChangeTS != state.LastStateChangeTimestamp {
+					if doors[doorName].lastStateChangeTS != state.LastStateChangeTimestamp && !doors[doorName].lastNotificationSent.IsZero() {
 						delete(doors, doorName)
 						sendAll(genMsg(MsgStateChangeClosed, doorName, time.Since(state.LastStateChangeTimestamp)))
 					}
